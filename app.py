@@ -72,7 +72,7 @@ data = None
 filename = ""
 
 with st.sidebar:
-    source = st.radio("Source", ["Sample Data", "Upload"], horizontal=True,
+    source = st.radio("Source", ["Sample Data", "Upload", "WebSocket"], horizontal=True,
                       label_visibility="collapsed")
 
     if source == "Sample Data":
@@ -85,7 +85,7 @@ with st.sidebar:
             if chosen:
                 filename = chosen.name
                 data = load_adpd_export(chosen)
-    else:
+    elif source == "Upload":
         uploaded = st.file_uploader("Upload", type=["csv", "xlsx"],
                                     label_visibility="collapsed")
         if uploaded:
@@ -101,6 +101,59 @@ with st.sidebar:
                 except Exception:
                     uploaded.seek(0)
                     data = load_generic(uploaded, filename)
+    else:  # WebSocket
+        from utils.streaming import get_or_create_stream
+
+        ws_url = st.text_input("WebSocket URL", value="ws://localhost:8765", key="ws_url")
+        buf_size = st.number_input("Buffer size", value=60000, step=1000, key="ws_buf_size")
+
+        client, buffer, recorder = get_or_create_stream(ws_url, int(buf_size))
+
+        wc1, wc2 = st.columns(2)
+        with wc1:
+            if st.button("Connect", disabled=client.is_connected, use_container_width=True):
+                client.start()
+                st.rerun()
+        with wc2:
+            if st.button("Disconnect", disabled=not client.is_connected, use_container_width=True):
+                client.stop()
+                if recorder.is_recording:
+                    recorder.stop()
+                st.rerun()
+
+        if client.is_connected:
+            st.success(f"Connected — {buffer.total_received:,} samples received")
+        elif client.error:
+            st.error(f"Error: {client.error}")
+
+        # Recording controls
+        st.divider()
+        st.markdown('<div class="channel-header">Recording</div>', unsafe_allow_html=True)
+        rc1, rc2 = st.columns(2)
+        with rc1:
+            if st.button("Start Rec", disabled=recorder.is_recording or not client.is_connected,
+                          use_container_width=True):
+                recorder.start()
+                st.rerun()
+        with rc2:
+            if st.button("Stop Rec", disabled=not recorder.is_recording,
+                          use_container_width=True):
+                recorder.stop()
+                st.rerun()
+
+        if recorder.is_recording:
+            st.caption(f"Recording... {recorder.rows_written:,} rows to {recorder.parquet_path.name}")
+        elif recorder.rows_written > 0:
+            st.caption(f"Saved {recorder.rows_written:,} rows to {recorder.parquet_path.name}")
+
+        # Build data dict from buffer snapshot
+        if len(buffer) > 0:
+            df_buf = buffer.snapshot()
+            filename = f"ws_stream"
+            data = {"df": df_buf, "metadata": {"source": "websocket", "url": ws_url}}
+            st.session_state["_ws_live_mode"] = True
+        else:
+            st.session_state["_ws_live_mode"] = False
 
 # ── No data state ────────────────────────────────────────────────────────────
 
@@ -298,6 +351,45 @@ if raw_box:
         st.session_state._pending_window = (new_lo, new_hi)
         st.rerun()
 
+# ── 1b. Live Signal (WebSocket mode) ─────────────────────────────────────────
+
+if st.session_state.get("_ws_live_mode"):
+    st.markdown('<div class="section-label">Live Signal (auto-refresh)</div>', unsafe_allow_html=True)
+
+    @st.fragment(run_every=1.0)
+    def _live_chart():
+        from utils.streaming import get_or_create_stream
+        _client, _buffer, _recorder = get_or_create_stream(
+            st.session_state.get("ws_url", ""),
+            int(st.session_state.get("ws_buf_size", 60000)),
+        )
+        if len(_buffer) == 0:
+            st.info("Waiting for data...")
+            return
+
+        df_live = _buffer.snapshot()
+        det_live = detect_columns(df_live)
+        ts_live = det_live["timestamp"]
+        sig_live = det_live["signals"]
+
+        tail_s = st.slider("Live window (seconds)", 1, 60, 10, key="live_window_s")
+        if ts_live and len(df_live) > 1:
+            ts_vals = df_live[ts_live]
+            cutoff = ts_vals.iloc[-1] - (tail_s * 1000)
+            df_live = df_live[ts_vals >= cutoff]
+
+        fig_live = plot_signals(df_live, ts_live, sig_live)
+        fig_live.update_layout(height=350)
+        st.plotly_chart(fig_live, use_container_width=True, key="live_signal_chart")
+
+        st.caption(
+            f"Buffer: {len(_buffer):,} / {_buffer.maxlen:,} | "
+            f"Total: {_buffer.total_received:,} | "
+            f"{'REC' if _recorder.is_recording else 'idle'}"
+        )
+
+    _live_chart()
+
 # ── 2. Export (behind checkbox) ──────────────────────────────────────────────
 
 show_export = st.checkbox("Export this window as CSV", value=False, key="show_export")
@@ -388,6 +480,22 @@ else:
             st.markdown('<div class="section-label">Poincare Plot</div>', unsafe_allow_html=True)
             fig_poincare = plot_poincare(wd, m)
             st.plotly_chart(fig_poincare, use_container_width=True, key="poincare_chart")
+
+        # ── Export filtered data (WebSocket mode) ─────────────────────
+        if st.session_state.get("_ws_live_mode"):
+            from utils.streaming import get_or_create_stream
+            _, _, _rec = get_or_create_stream(
+                st.session_state.get("ws_url", ""),
+                int(st.session_state.get("ws_buf_size", 60000)),
+            )
+            if st.button("Export filtered signal as CSV", use_container_width=True,
+                          key="export_filtered"):
+                filtered_df = pd.DataFrame({
+                    "time_s": np.arange(len(filtered)) / sample_rate,
+                    "filtered": filtered,
+                })
+                csv_path = _rec.export_filtered_csv(filtered_df)
+                st.success(f"Saved to {csv_path.name}")
 
     except Exception as e:
         st.error(f"HRV analysis failed: {e}")
