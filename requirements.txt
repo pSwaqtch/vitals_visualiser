@@ -1,8 +1,0 @@
-streamlit
-plotly
-pandas
-openpyxl
-heartpy
-setuptools<81
-websockets
-pyarrow
