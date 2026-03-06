@@ -1,0 +1,18 @@
+[project]
+name = "vitals-visualiser"
+version = "0.1.0"
+description = "A vitals visualization tool"
+requires-python = ">=3.10"
+dependencies = [
+    "streamlit",
+    "plotly",
+    "pandas",
+    "openpyxl",
+    "heartpy",
+    "setuptools<81",
+    "websockets",
+    "pyarrow",
+]
+
+[tool.uv]
+dev-dependencies = []
