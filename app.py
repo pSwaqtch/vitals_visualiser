@@ -8,7 +8,14 @@ import pandas as pd
 import streamlit as st
 
 from utils.loader import load_adpd_export, load_generic, detect_columns
-from utils.plotting import plot_signals, plot_peaks, plot_poincare, plot_rr_tachogram, COLORS
+from utils.spo2 import analyze_spo2, calculate_r_value, estimate_spo2
+from utils.plotting import (
+    plot_signals,
+    plot_peaks,
+    plot_poincare,
+    plot_rr_tachogram,
+    COLORS,
+)
 
 EXPORT_DIR = Path(__file__).parent / "export_data"
 
@@ -17,11 +24,14 @@ _HRV_DEFAULTS = dict(bp_lo=0.7, bp_hi=3.5, bpm_min=40, bpm_max=180)
 # ── Page config & CSS ────────────────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="ADPD7000", page_icon="~", layout="wide",
+    page_title="ADPD7000",
+    page_icon="~",
+    layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-st.markdown("""
+st.markdown(
+    """
 <style>
     .block-container { padding-top: 1.5rem; }
 
@@ -55,16 +65,21 @@ st.markdown("""
                      margin: 0.8rem 0 0.3rem 0; }
     .window-info { font-size: 0.78rem; opacity: 0.6; }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # ── Header ───────────────────────────────────────────────────────────────────
 
-st.markdown("""
+st.markdown(
+    """
 <div class="app-header">
     <h1>ADPD7000</h1>
     <span class="subtitle">Sensor Data Viewer</span>
 </div>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # ── Sidebar: Data source ────────────────────────────────────────────────────
 
@@ -72,22 +87,33 @@ data = None
 filename = ""
 
 with st.sidebar:
-    source = st.radio("Source", ["Sample Data", "Upload", "WebSocket"], horizontal=True,
-                      label_visibility="collapsed")
+    source = st.radio(
+        "Source",
+        ["Sample Data", "Upload", "WebSocket"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
     if source == "Sample Data":
-        sample_files = sorted(EXPORT_DIR.glob("*.xlsx")) + sorted(EXPORT_DIR.glob("*.csv"))
+        sample_files = sorted(EXPORT_DIR.glob("*.xlsx")) + sorted(
+            EXPORT_DIR.glob("*.csv")
+        )
         if not sample_files:
             st.warning("No files in export_data/")
         else:
-            chosen = st.selectbox("File", sample_files, format_func=lambda p: p.name,
-                                  label_visibility="collapsed")
+            chosen = st.selectbox(
+                "File",
+                sample_files,
+                format_func=lambda p: p.name,
+                label_visibility="collapsed",
+            )
             if chosen:
                 filename = chosen.name
                 data = load_adpd_export(chosen)
     elif source == "Upload":
-        uploaded = st.file_uploader("Upload", type=["csv", "xlsx"],
-                                    label_visibility="collapsed")
+        uploaded = st.file_uploader(
+            "Upload", type=["csv", "xlsx"], label_visibility="collapsed"
+        )
         if uploaded:
             filename = uploaded.name
             if filename.endswith(".csv"):
@@ -104,18 +130,26 @@ with st.sidebar:
     else:  # WebSocket
         from utils.streaming import get_or_create_stream
 
-        ws_url = st.text_input("WebSocket URL", value="ws://localhost:8765", key="ws_url")
-        buf_size = st.number_input("Buffer size", value=60000, step=1000, key="ws_buf_size")
+        ws_url = st.text_input(
+            "WebSocket URL", value="ws://localhost:8765", key="ws_url"
+        )
+        buf_size = st.number_input(
+            "Buffer size", value=60000, step=1000, key="ws_buf_size"
+        )
 
         client, buffer, recorder = get_or_create_stream(ws_url, int(buf_size))
 
         wc1, wc2 = st.columns(2)
         with wc1:
-            if st.button("Connect", disabled=client.is_connected, use_container_width=True):
+            if st.button(
+                "Connect", disabled=client.is_connected, use_container_width=True
+            ):
                 client.start()
                 st.rerun()
         with wc2:
-            if st.button("Disconnect", disabled=not client.is_connected, use_container_width=True):
+            if st.button(
+                "Disconnect", disabled=not client.is_connected, use_container_width=True
+            ):
                 client.stop()
                 if recorder.is_recording:
                     recorder.stop()
@@ -128,23 +162,33 @@ with st.sidebar:
 
         # Recording controls
         st.divider()
-        st.markdown('<div class="channel-header">Recording</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="channel-header">Recording</div>', unsafe_allow_html=True
+        )
         rc1, rc2 = st.columns(2)
         with rc1:
-            if st.button("Start Rec", disabled=recorder.is_recording or not client.is_connected,
-                          use_container_width=True):
+            if st.button(
+                "Start Rec",
+                disabled=recorder.is_recording or not client.is_connected,
+                use_container_width=True,
+            ):
                 recorder.start()
                 st.rerun()
         with rc2:
-            if st.button("Stop Rec", disabled=not recorder.is_recording,
-                          use_container_width=True):
+            if st.button(
+                "Stop Rec", disabled=not recorder.is_recording, use_container_width=True
+            ):
                 recorder.stop()
                 st.rerun()
 
         if recorder.is_recording:
-            st.caption(f"Recording... {recorder.rows_written:,} rows to {recorder.parquet_path.name}")
+            st.caption(
+                f"Recording... {recorder.rows_written:,} rows to {recorder.parquet_path.name}"
+            )
         elif recorder.rows_written > 0:
-            st.caption(f"Saved {recorder.rows_written:,} rows to {recorder.parquet_path.name}")
+            st.caption(
+                f"Saved {recorder.rows_written:,} rows to {recorder.parquet_path.name}"
+            )
 
         # Build data dict from buffer snapshot
         if len(buffer) > 0:
@@ -158,13 +202,16 @@ with st.sidebar:
 # ── No data state ────────────────────────────────────────────────────────────
 
 if data is None or data["df"].empty:
-    st.markdown("""
+    st.markdown(
+        """
     <div style="text-align:center; padding: 6rem 2rem; color: #aaa;">
         <div style="font-size: 3rem; margin-bottom: 1rem;">&#x1f4c8;</div>
         <div style="font-size: 1.1rem;">Open the sidebar to select a sample file or upload your own</div>
         <div style="font-size: 0.85rem; margin-top: 0.5rem;">Supports ADPD7000 .xlsx exports and generic CSV files</div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
     st.stop()
 
 # ── Data loaded — compute globals ────────────────────────────────────────────
@@ -205,11 +252,17 @@ with st.sidebar:
         if "version" in meta:
             lines.append(f"<b>Version</b> {meta['version'].strip()}")
         if "export_start" in meta:
-            lines.append(f"<b>Window</b> {meta['export_start']} &rarr; {meta.get('export_stop', '')}")
+            lines.append(
+                f"<b>Window</b> {meta['export_start']} &rarr; {meta.get('export_stop', '')}"
+            )
         if meta.get("ref_sbp") or meta.get("ref_dbp"):
-            lines.append(f"<b>Ref BP</b> {meta.get('ref_sbp', '-')}/{meta.get('ref_dbp', '-')} mmHg")
-        st.markdown('<div class="meta-row">' + "<br>".join(lines) + "</div>",
-                    unsafe_allow_html=True)
+            lines.append(
+                f"<b>Ref BP</b> {meta.get('ref_sbp', '-')}/{meta.get('ref_dbp', '-')} mmHg"
+            )
+        st.markdown(
+            '<div class="meta-row">' + "<br>".join(lines) + "</div>",
+            unsafe_allow_html=True,
+        )
 
     st.divider()
 
@@ -225,7 +278,9 @@ with st.sidebar:
     st.divider()
 
     # ── HRV Parameters ───────────────────────────────────────────────────
-    st.markdown('<div class="channel-header">HRV Parameters</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="channel-header">HRV Parameters</div>', unsafe_allow_html=True
+    )
 
     # Apply queued HRV reset before widgets render
     if "_pending_hrv_reset" in st.session_state:
@@ -239,31 +294,85 @@ with st.sidebar:
 
     hc1, hc2 = st.columns(2)
     with hc1:
-        bp_low = st.number_input("BP Low (Hz)", value=_HRV_DEFAULTS["bp_lo"],
-                                 step=0.1, format="%.1f", key="bp_lo")
+        bp_low = st.number_input(
+            "BP Low (Hz)",
+            value=_HRV_DEFAULTS["bp_lo"],
+            step=0.1,
+            format="%.1f",
+            key="bp_lo",
+        )
     with hc2:
-        bp_high = st.number_input("BP High (Hz)", value=_HRV_DEFAULTS["bp_hi"],
-                                  step=0.1, format="%.1f", key="bp_hi")
+        bp_high = st.number_input(
+            "BP High (Hz)",
+            value=_HRV_DEFAULTS["bp_hi"],
+            step=0.1,
+            format="%.1f",
+            key="bp_hi",
+        )
 
     hc3, hc4 = st.columns(2)
     with hc3:
-        bpm_min = st.number_input("BPM min", value=_HRV_DEFAULTS["bpm_min"],
-                                  step=5, key="bpm_min")
+        bpm_min = st.number_input(
+            "BPM min", value=_HRV_DEFAULTS["bpm_min"], step=5, key="bpm_min"
+        )
     with hc4:
-        bpm_max = st.number_input("BPM max", value=_HRV_DEFAULTS["bpm_max"],
-                                  step=5, key="bpm_max")
+        bpm_max = st.number_input(
+            "BPM max", value=_HRV_DEFAULTS["bpm_max"], step=5, key="bpm_max"
+        )
 
     if st.button("Reset to defaults", use_container_width=True):
         st.session_state._pending_hrv_reset = dict(_HRV_DEFAULTS)
         st.rerun()
 
+    # ── SpO2 Parameters ─────────────────────────────────────────────────────
+    st.divider()
+    st.markdown('<div class="channel-header">SpO2</div>', unsafe_allow_html=True)
+
+    if len(signal_candidates) >= 2:
+        spo2_options = signal_candidates
+
+        spo2_red_idx = 0
+        spo2_ir_idx = 1 if len(signal_candidates) > 1 else 0
+
+        red_col = st.selectbox(
+            "Red Channel", spo2_options, index=spo2_red_idx, key="spo2_red"
+        )
+        ir_col = st.selectbox(
+            "IR Channel", spo2_options, index=spo2_ir_idx, key="spo2_ir"
+        )
+
+        if red_col and ir_col and red_col == ir_col:
+            st.warning("Red and IR must be different channels")
+
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            spo2_offset = st.number_input(
+                "Calib Offset", value=0.0, step=0.1, format="%.2f", key="spo2_offset"
+            )
+        with sc2:
+            spo2_scale = st.number_input(
+                "Calib Scale", value=1.0, step=0.1, format="%.2f", key="spo2_scale"
+            )
+
+        st.caption("Adjust calibration if SpO2 differs from reference")
+    else:
+        st.caption("Need at least 2 channels for SpO2 (Red + IR)")
+
     # ── Timestamp override ───────────────────────────────────────────────
     st.divider()
     with st.expander("Advanced"):
         ts_options = [None] + all_cols
-        ts_idx = ts_options.index(detected["timestamp"]) if detected["timestamp"] in ts_options else 0
-        timestamp_col = st.selectbox("Timestamp column", ts_options, index=ts_idx,
-                                     format_func=lambda x: "(use index)" if x is None else x)
+        ts_idx = (
+            ts_options.index(detected["timestamp"])
+            if detected["timestamp"] in ts_options
+            else 0
+        )
+        timestamp_col = st.selectbox(
+            "Timestamp column",
+            ts_options,
+            index=ts_idx,
+            format_func=lambda x: "(use index)" if x is None else x,
+        )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN AREA
@@ -304,8 +413,11 @@ st.markdown('<div class="section-label">Analysis Window</div>', unsafe_allow_htm
 wc1, wc2 = st.columns([11, 1])
 with wc1:
     window = st.slider(
-        "Analysis window", min_value=x_min, max_value=x_max,
-        value=(x_min, x_max), key="analysis_window",
+        "Analysis window",
+        min_value=x_min,
+        max_value=x_max,
+        value=(x_min, x_max),
+        key="analysis_window",
         label_visibility="collapsed",
     )
 with wc2:
@@ -339,8 +451,13 @@ st.markdown(
 st.markdown('<div class="section-label">Raw Signal</div>', unsafe_allow_html=True)
 st.caption("Box-select a region to zoom the analysis window")
 fig_raw = plot_signals(df, timestamp_col, active_signals)
-raw_event = st.plotly_chart(fig_raw, use_container_width=True, key="raw_chart",
-                            on_select="rerun", selection_mode="box")
+raw_event = st.plotly_chart(
+    fig_raw,
+    use_container_width=True,
+    key="raw_chart",
+    on_select="rerun",
+    selection_mode="box",
+)
 
 # If user box-selected on raw chart, queue window update for next rerun
 raw_box = _extract_box_x(raw_event)
@@ -354,11 +471,15 @@ if raw_box:
 # ── 1b. Live Signal (WebSocket mode) ─────────────────────────────────────────
 
 if st.session_state.get("_ws_live_mode"):
-    st.markdown('<div class="section-label">Live Signal (auto-refresh)</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-label">Live Signal (auto-refresh)</div>',
+        unsafe_allow_html=True,
+    )
 
     @st.fragment(run_every=1.0)
     def _live_chart():
         from utils.streaming import get_or_create_stream
+
         _client, _buffer, _recorder = get_or_create_stream(
             st.session_state.get("ws_url", ""),
             int(st.session_state.get("ws_buf_size", 60000)),
@@ -395,7 +516,9 @@ if st.session_state.get("_ws_live_mode"):
 show_export = st.checkbox("Export this window as CSV", value=False, key="show_export")
 
 if show_export:
-    export_cols = ([timestamp_col] + active_signals) if timestamp_col else active_signals
+    export_cols = (
+        ([timestamp_col] + active_signals) if timestamp_col else active_signals
+    )
     export_df = df[export_cols]
     csv_data = export_df.to_csv(index=False).encode("utf-8")
 
@@ -406,9 +529,11 @@ if show_export:
         st.metric("Duration", win_label)
     with ec3:
         st.download_button(
-            "Download CSV", csv_data,
+            "Download CSV",
+            csv_data,
             file_name=f"window_{filename.rsplit('.', 1)[0]}.csv",
-            mime="text/csv", use_container_width=True,
+            mime="text/csv",
+            use_container_width=True,
         )
 
 # ── 3. HRV Analysis (computed on windowed data) ─────────────────────────────
@@ -420,7 +545,9 @@ if sample_rate is None:
 elif hrv_col is None:
     st.caption("HRV analysis unavailable — no channel selected.")
 elif len(df) < 30:
-    st.caption("HRV analysis unavailable — window too small (need at least ~0.5s of data).")
+    st.caption(
+        "HRV analysis unavailable — window too small (need at least ~0.5s of data)."
+    )
 else:
     import heartpy as hp
 
@@ -428,14 +555,21 @@ else:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            filtered = hp.filter_signal(signal, cutoff=[bp_low, bp_high],
-                                        sample_rate=sample_rate, order=3,
-                                        filtertype="bandpass")
-            wd, m = hp.process(filtered, sample_rate=sample_rate,
-                               bpmmin=bpm_min, bpmmax=bpm_max)
+            filtered = hp.filter_signal(
+                signal,
+                cutoff=[bp_low, bp_high],
+                sample_rate=sample_rate,
+                order=3,
+                filtertype="bandpass",
+            )
+            wd, m = hp.process(
+                filtered, sample_rate=sample_rate, bpmmin=bpm_min, bpmmax=bpm_max
+            )
 
         # ── Metrics ──────────────────────────────────────────────────────
-        st.markdown('<div class="section-label">HRV Metrics</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-label">HRV Metrics</div>', unsafe_allow_html=True
+        )
 
         mc = st.columns(5)
         mc[0].metric("HR", f"{m['bpm']:.0f} bpm")
@@ -452,11 +586,18 @@ else:
         mc2[4].metric("SD1/SD2", f"{m['sd1/sd2']:.2f}")
 
         # ── Peak Detection (full width) ─────────────────────────────────
-        st.markdown('<div class="section-label">Peak Detection</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-label">Peak Detection</div>', unsafe_allow_html=True
+        )
         st.caption("Box-select a region to zoom the analysis window")
         fig_peaks = plot_peaks(wd, m, sample_rate)
-        peaks_event = st.plotly_chart(fig_peaks, use_container_width=True, key="peaks_chart",
-                                      on_select="rerun", selection_mode="box")
+        peaks_event = st.plotly_chart(
+            fig_peaks,
+            use_container_width=True,
+            key="peaks_chart",
+            on_select="rerun",
+            selection_mode="box",
+        )
 
         # Peak chart x-axis is in seconds relative to window start — convert back
         peaks_box = _extract_box_x(peaks_event)
@@ -472,35 +613,128 @@ else:
         col_tacho, col_poincare = st.columns(2)
 
         with col_tacho:
-            st.markdown('<div class="section-label">RR Tachogram</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="section-label">RR Tachogram</div>', unsafe_allow_html=True
+            )
             fig_tacho = plot_rr_tachogram(wd, sample_rate)
             st.plotly_chart(fig_tacho, use_container_width=True, key="tacho_chart")
 
         with col_poincare:
-            st.markdown('<div class="section-label">Poincare Plot</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="section-label">Poincare Plot</div>', unsafe_allow_html=True
+            )
             fig_poincare = plot_poincare(wd, m)
-            st.plotly_chart(fig_poincare, use_container_width=True, key="poincare_chart")
+            st.plotly_chart(
+                fig_poincare, use_container_width=True, key="poincare_chart"
+            )
 
         # ── Export filtered data (WebSocket mode) ─────────────────────
         if st.session_state.get("_ws_live_mode"):
             from utils.streaming import get_or_create_stream
+
             _, _, _rec = get_or_create_stream(
                 st.session_state.get("ws_url", ""),
                 int(st.session_state.get("ws_buf_size", 60000)),
             )
-            if st.button("Export filtered signal as CSV", use_container_width=True,
-                          key="export_filtered"):
-                filtered_df = pd.DataFrame({
-                    "time_s": np.arange(len(filtered)) / sample_rate,
-                    "filtered": filtered,
-                })
+            if st.button(
+                "Export filtered signal as CSV",
+                use_container_width=True,
+                key="export_filtered",
+            ):
+                filtered_df = pd.DataFrame(
+                    {
+                        "time_s": np.arange(len(filtered)) / sample_rate,
+                        "filtered": filtered,
+                    }
+                )
                 csv_path = _rec.export_filtered_csv(filtered_df)
                 st.success(f"Saved to {csv_path.name}")
 
     except Exception as e:
         st.error(f"HRV analysis failed: {e}")
-        st.caption("Try adjusting the bandpass filter or BPM range in the sidebar, "
-                   "or widen the analysis window.")
+        st.caption(
+            "Try adjusting the bandpass filter or BPM range in the sidebar, "
+            "or widen the analysis window."
+        )
+
+    # ── SpO2 Analysis ─────────────────────────────────────────────────────────
+    if sample_rate and len(signal_candidates) >= 2:
+        red_ch = st.session_state.get("spo2_red")
+        ir_ch = st.session_state.get("spo2_ir")
+
+        if red_ch and ir_ch and red_ch != ir_ch:
+            st.divider()
+            st.markdown(
+                '<div class="section-label">SpO2 Analysis</div>', unsafe_allow_html=True
+            )
+
+            offset = st.session_state.get("spo2_offset", 0.0)
+            scale = st.session_state.get("spo2_scale", 1.0)
+
+            try:
+                r_val = calculate_r_value(
+                    df[red_ch].values, df[ir_ch].values, sample_rate
+                )
+                spo2 = estimate_spo2(r_val, offset=offset, scale=scale)
+
+                sc1, sc2, sc3 = st.columns(3)
+                with sc1:
+                    st.metric("R Value", f"{r_val:.3f}")
+                with sc2:
+                    st.metric("SpO2", f"{spo2:.1f}%")
+                with sc3:
+                    st.metric("Red/IR Ratio", f"{(r_val * scale + offset):.3f}")
+
+                spo2_results = analyze_spo2(
+                    df, red_ch, ir_ch, sample_rate, window_size=256, step_size=128
+                )
+
+                if spo2_results["spo2_values"]:
+                    import plotly.graph_objects as go
+
+                    if "timestamp" in df.columns and spo2_results["timestamps"]:
+                        x_vals = spo2_results["timestamps"]
+                    else:
+                        x_vals = list(range(len(spo2_results["spo2_values"])))
+
+                    fig_spo2 = go.Figure()
+                    fig_spo2.add_trace(
+                        go.Scatter(
+                            x=x_vals,
+                            y=spo2_results["spo2_values"],
+                            mode="lines",
+                            name="SpO2",
+                            line=dict(color="#00CC96", width=2),
+                            hovertemplate="%{y:.1f}%<extra>SpO2</extra>",
+                        )
+                    )
+
+                    fig_spo2.update_layout(
+                        template="plotly_white",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        hovermode="x unified",
+                        xaxis=dict(
+                            title="Time" if "timestamp" in df.columns else "Window",
+                            gridcolor="rgba(128,128,128,0.15)",
+                        ),
+                        yaxis=dict(
+                            title="SpO2 (%)",
+                            range=[70, 100],
+                            gridcolor="rgba(128,128,128,0.15)",
+                        ),
+                        margin=dict(l=50, r=20, t=10, b=40),
+                        height=300,
+                    )
+                    st.plotly_chart(fig_spo2, use_container_width=True)
+
+                    st.caption(
+                        f"Window: 256 samples (~{256 / sample_rate:.1f}s), "
+                        f"step: 128 samples (~{128 / sample_rate:.1f}s)"
+                    )
+            except Exception as e:
+                st.error(f"SpO2 analysis failed: {e}")
+                st.caption("Ensure both Red and IR channels have valid data.")
 
 # ── 4. Raw Data Table ────────────────────────────────────────────────────────
 
