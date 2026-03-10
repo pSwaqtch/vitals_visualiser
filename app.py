@@ -8,7 +8,13 @@ import pandas as pd
 import streamlit as st
 
 from utils.loader import load_adpd_export, load_generic, detect_columns
-from utils.spo2 import analyze_spo2, calculate_r_value, estimate_spo2
+from utils.spo2 import (
+    SpO2Calibration,
+    analyze_spo2,
+    calculate_r_value,
+    estimate_spo2,
+    get_calibration_presets,
+)
 from utils.plotting import (
     plot_signals,
     plot_peaks,
@@ -20,6 +26,31 @@ from utils.plotting import (
 EXPORT_DIR = Path(__file__).parent / "export_data"
 
 _HRV_DEFAULTS = dict(bp_lo=0.7, bp_hi=3.5, bpm_min=40, bpm_max=180)
+
+
+def _infer_spo2_channel_indices(columns: list[str]) -> tuple[int, int]:
+    """Guess default Red/IR channel indices from common ADPD naming."""
+    if len(columns) < 2:
+        return 0, 0
+
+    lower = [c.lower() for c in columns]
+
+    def first_match(tokens: tuple[str, ...]) -> int | None:
+        for idx, name in enumerate(lower):
+            if any(token in name for token in tokens):
+                return idx
+        return None
+
+    ir_idx = first_match(("slota", "slot a", "infrared", " ir", "_ir", "-ir"))
+    red_idx = first_match(("slotb", "slot b", " red", "_red", "-red"))
+
+    # If explicit names are missing, keep channels different and predictable.
+    if ir_idx is None:
+        ir_idx = 0
+    if red_idx is None or red_idx == ir_idx:
+        red_idx = 1 if ir_idx == 0 else 0
+
+    return red_idx, ir_idx
 
 # ── Page config & CSS ────────────────────────────────────────────────────────
 
@@ -330,9 +361,7 @@ with st.sidebar:
 
     if len(signal_candidates) >= 2:
         spo2_options = signal_candidates
-
-        spo2_red_idx = 0
-        spo2_ir_idx = 1 if len(signal_candidates) > 1 else 0
+        spo2_red_idx, spo2_ir_idx = _infer_spo2_channel_indices(spo2_options)
 
         red_col = st.selectbox(
             "Red Channel", spo2_options, index=spo2_red_idx, key="spo2_red"
@@ -344,17 +373,42 @@ with st.sidebar:
         if red_col and ir_col and red_col == ir_col:
             st.warning("Red and IR must be different channels")
 
-        sc1, sc2 = st.columns(2)
-        with sc1:
-            spo2_offset = st.number_input(
-                "Calib Offset", value=0.0, step=0.1, format="%.2f", key="spo2_offset"
-            )
-        with sc2:
-            spo2_scale = st.number_input(
-                "Calib Scale", value=1.0, step=0.1, format="%.2f", key="spo2_scale"
-            )
+        presets = get_calibration_presets()
+        preset_names = list(presets.keys())
+        custom_option = "Custom Polynomial"
+        model_name = st.selectbox(
+            "Calibration",
+            preset_names + [custom_option],
+            index=0,
+            key="spo2_calibration_name",
+        )
 
-        st.caption("Adjust calibration if SpO2 differs from reference")
+        if model_name == custom_option:
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1:
+                a_coeff = st.number_input(
+                    "a (R²)", value=-0.008872, format="%.6f", key="spo2_a"
+                )
+            with cc2:
+                b_coeff = st.number_input(
+                    "b (R)", value=0.425930, format="%.6f", key="spo2_b"
+                )
+            with cc3:
+                c_coeff = st.number_input(
+                    "c", value=94.845, format="%.3f", key="spo2_c"
+                )
+            active_calibration = SpO2Calibration(
+                name=custom_option, a=a_coeff, b=b_coeff, c=c_coeff
+            )
+        else:
+            active_calibration = presets[model_name]
+            st.session_state["spo2_a"] = active_calibration.a
+            st.session_state["spo2_b"] = active_calibration.b
+            st.session_state["spo2_c"] = active_calibration.c
+
+        st.caption(active_calibration.equation())
+        st.caption("R = (AC_red/DC_red) / (AC_ir/DC_ir)")
+        st.caption("Default assumes slotA=IR and slotB=Red unless changed above.")
     else:
         st.caption("Need at least 2 channels for SpO2 (Red + IR)")
 
@@ -668,31 +722,43 @@ else:
                 '<div class="section-label">SpO2 Analysis</div>', unsafe_allow_html=True
             )
 
-            offset = st.session_state.get("spo2_offset", 0.0)
-            scale = st.session_state.get("spo2_scale", 1.0)
+            calibration = SpO2Calibration(
+                name=str(st.session_state.get("spo2_calibration_name", "Custom Polynomial")),
+                a=float(st.session_state.get("spo2_a", -0.008872)),
+                b=float(st.session_state.get("spo2_b", 0.425930)),
+                c=float(st.session_state.get("spo2_c", 94.845)),
+            )
 
             try:
                 r_val = calculate_r_value(
                     df[red_ch].values, df[ir_ch].values, sample_rate
                 )
-                spo2 = estimate_spo2(r_val, offset=offset, scale=scale)
+                spo2 = estimate_spo2(r_val, calibration=calibration)
 
                 sc1, sc2, sc3 = st.columns(3)
                 with sc1:
-                    st.metric("R Value", f"{r_val:.3f}")
+                    st.metric("R Value (raw)", f"{r_val:.3f}")
                 with sc2:
                     st.metric("SpO2", f"{spo2:.1f}%")
                 with sc3:
-                    st.metric("Red/IR Ratio", f"{(r_val * scale + offset):.3f}")
+                    st.metric("Calibration", calibration.name)
+                st.caption(calibration.equation())
 
                 spo2_results = analyze_spo2(
-                    df, red_ch, ir_ch, sample_rate, window_size=256, step_size=128
+                    df,
+                    red_ch,
+                    ir_ch,
+                    sample_rate,
+                    calibration=calibration,
+                    timestamp_col=timestamp_col,
+                    window_size=256,
+                    step_size=128,
                 )
 
                 if spo2_results["spo2_values"]:
                     import plotly.graph_objects as go
 
-                    if "timestamp" in df.columns and spo2_results["timestamps"]:
+                    if timestamp_col and timestamp_col in df.columns and spo2_results["timestamps"]:
                         x_vals = spo2_results["timestamps"]
                     else:
                         x_vals = list(range(len(spo2_results["spo2_values"])))
@@ -715,7 +781,7 @@ else:
                         paper_bgcolor="rgba(0,0,0,0)",
                         hovermode="x unified",
                         xaxis=dict(
-                            title="Time" if "timestamp" in df.columns else "Window",
+                            title="Time" if timestamp_col and timestamp_col in df.columns else "Window",
                             gridcolor="rgba(128,128,128,0.15)",
                         ),
                         yaxis=dict(
