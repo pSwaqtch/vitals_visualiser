@@ -28,7 +28,7 @@ SENSOR_QUADRATIC = SpO2Calibration(
     name="Sensor-Specific Quadratic (Recommended)",
     a=-0.0088722746,
     b=0.4259296021,
-    c=94.845,
+    c=97.845,
 )
 
 # Explicit ADPD constants/metadata for our current hardware setup.
