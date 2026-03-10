@@ -52,6 +52,16 @@ def _infer_spo2_channel_indices(columns: list[str]) -> tuple[int, int]:
 
     return red_idx, ir_idx
 
+
+def _invalid_spo2_calibration_reason(calibration: SpO2Calibration) -> str | None:
+    """Return a user-facing reason when calibration coefficients are unusable."""
+    coeffs = np.array([calibration.a, calibration.b, calibration.c], dtype=float)
+    if not np.isfinite(coeffs).all():
+        return "coefficients must be finite numbers"
+    if np.allclose(coeffs, 0.0, atol=1e-12, rtol=0.0):
+        return "a, b, and c cannot all be zero"
+    return None
+
 # ── Page config & CSS ────────────────────────────────────────────────────────
 
 st.set_page_config(
@@ -733,27 +743,37 @@ else:
                 r_val = calculate_r_value(
                     df[red_ch].values, df[ir_ch].values, sample_rate
                 )
-                spo2 = estimate_spo2(r_val, calibration=calibration)
-
                 sc1, sc2, sc3 = st.columns(3)
+                invalid_reason = _invalid_spo2_calibration_reason(calibration)
                 with sc1:
                     st.metric("R Value (raw)", f"{r_val:.3f}")
                 with sc2:
-                    st.metric("SpO2", f"{spo2:.1f}%")
+                    if invalid_reason:
+                        st.metric("SpO2", "N/A")
+                    else:
+                        spo2 = estimate_spo2(r_val, calibration=calibration)
+                        st.metric("SpO2", f"{spo2:.1f}%")
                 with sc3:
                     st.metric("Calibration", calibration.name)
                 st.caption(calibration.equation())
 
-                spo2_results = analyze_spo2(
-                    df,
-                    red_ch,
-                    ir_ch,
-                    sample_rate,
-                    calibration=calibration,
-                    timestamp_col=timestamp_col,
-                    window_size=256,
-                    step_size=128,
-                )
+                if invalid_reason:
+                    st.warning(
+                        f"Invalid calibration, {invalid_reason}. "
+                        "Set valid coefficients to enable SpO2 estimation."
+                    )
+                    spo2_results = {"spo2_values": [], "timestamps": []}
+                else:
+                    spo2_results = analyze_spo2(
+                        df,
+                        red_ch,
+                        ir_ch,
+                        sample_rate,
+                        calibration=calibration,
+                        timestamp_col=timestamp_col,
+                        window_size=256,
+                        step_size=128,
+                    )
 
                 if spo2_results["spo2_values"]:
                     import plotly.graph_objects as go
