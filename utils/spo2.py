@@ -1,68 +1,23 @@
-"""SpO2 estimation utilities using ratio-of-ratios."""
-
-from __future__ import annotations
-
-from dataclasses import dataclass
+"""SpO2 estimation using ratio-of-ratios method."""
 
 import numpy as np
 import pandas as pd
 from scipy import signal
 
 
-@dataclass(frozen=True)
-class SpO2Calibration:
-    """Polynomial calibration in sensor R-space: SpO2 = a*R^2 + b*R + c."""
-
-    name: str
-    a: float
-    b: float
-    c: float
-
-    def equation(self) -> str:
-        """Human-readable equation for UI captions."""
-        return f"SpO2 = {self.a:+.6f}*R² {self.b:+.6f}*R {self.c:+.3f}"
-
-
-# Sensor-specific defaults derived from slotA=IR, slotB=Red calibration run.
-SENSOR_QUADRATIC = SpO2Calibration(
-    name="Sensor-Specific Quadratic (Recommended)",
-    a=-0.0088722746,
-    b=0.4259296021,
-    c=97.845,
-)
-
-# Explicit ADPD constants/metadata for our current hardware setup.
-# Channel mapping used during calibration: slotA=IR, slotB=Red.
-# R definition: (AC_red/DC_red) / (AC_ir/DC_ir)
-ADPD_SENSOR_CALIBRATION = {
-    "channel_mapping": "slotA=IR, slotB=Red",
-    "reference_spo2_pct": 99.0,
-    "reference_r_median": 34.3885207842,
-    "quadratic": {
-        "a": SENSOR_QUADRATIC.a,
-        "b": SENSOR_QUADRATIC.b,
-        "c": SENSOR_QUADRATIC.c,
-        "equation": "SpO2 = -0.0088722746*R^2 + 0.4259296021*R + 94.845",
-    },
-}
-
-
-def get_calibration_presets() -> dict[str, SpO2Calibration]:
-    """Return ADPD-only calibration preset(s) for the app."""
-    return {
-        SENSOR_QUADRATIC.name: SENSOR_QUADRATIC,
-    }
-
-
 def extract_ac_dc(ppg_signal: np.ndarray, sample_rate: float) -> tuple[float, float]:
-    """Extract AC/DC components from one PPG channel."""
+    """Extract AC and DC components from PPG signal.
+
+    AC: pulsatile component (heartbeat-synchronized, ~0.5-4 Hz)
+    DC: quasi-static component (tissue, venous blood)
+
+    Returns:
+        tuple: (AC_rms, DC_mean)
+    """
     if len(ppg_signal) < 10:
         return 0.0, 0.0
 
-    ppg = np.asarray(ppg_signal, dtype=float)
-    dc_mean = float(np.mean(ppg))
-    if sample_rate <= 1:
-        return 0.0, dc_mean
+    ppg = np.asarray(ppg_signal)
 
     b, a = signal.butter(3, [0.5, 4.0], btype="band", fs=sample_rate)
     try:
@@ -70,39 +25,50 @@ def extract_ac_dc(ppg_signal: np.ndarray, sample_rate: float) -> tuple[float, fl
     except Exception:
         ac_component = ppg - np.mean(ppg)
 
-    ac_rms = float(np.sqrt(np.mean(ac_component**2)))
-    return ac_rms, dc_mean
+    ac_rms = np.sqrt(np.mean(ac_component**2))
+    dc_mean = np.mean(ppg)
+
+    return float(ac_rms), float(dc_mean)
 
 
 def calculate_r_value(
     red_signal: np.ndarray, ir_signal: np.ndarray, sample_rate: float
 ) -> float:
-    """Calculate R = (AC_red / DC_red) / (AC_ir / DC_ir)."""
+    """Calculate ratio of ratios (R) for SpO2 estimation.
+
+    R = (AC_red / DC_red) / (AC_ir / DC_ir)
+    """
     ac_red, dc_red = extract_ac_dc(red_signal, sample_rate)
     ac_ir, dc_ir = extract_ac_dc(ir_signal, sample_rate)
 
     if dc_red <= 0 or dc_ir <= 0:
         return 0.0
 
-    ratio_red = ac_red / dc_red
-    ratio_ir = ac_ir / dc_ir
+    ratio_red = ac_red / dc_red if dc_red > 0 else 0
+    ratio_ir = ac_ir / dc_ir if dc_ir > 0 else 0
+
     if ratio_ir <= 0:
         return 0.0
 
-    r_value = ratio_red / ratio_ir
-    return float(r_value if np.isfinite(r_value) and r_value > 0 else 0.0)
+    return ratio_red / ratio_ir
 
 
-def estimate_spo2(
-    r_value: float,
-    calibration: SpO2Calibration,
-    *,
-    clamp_min: float = 70.0,
-    clamp_max: float = 100.0,
-) -> float:
-    """Estimate SpO2 with a polynomial calibration."""
-    spo2 = (calibration.a * r_value * r_value) + (calibration.b * r_value) + calibration.c
-    return float(np.clip(spo2, clamp_min, clamp_max))
+def estimate_spo2(r_value: float, offset: float = 0.0, scale: float = 1.0) -> float:
+    """Estimate SpO2 from R value using calibration curve.
+
+    Default: SpO2 = 110 - 25 * R (generic formula)
+
+    Args:
+        r_value: Ratio of ratios
+        offset: Calibration offset adjustment
+        scale: Calibration scale adjustment
+
+    Returns:
+        SpO2 percentage (clamped to 70-100%)
+    """
+    r_adjusted = r_value * scale + offset
+    spo2 = 110.0 - 25.0 * r_adjusted
+    return float(np.clip(spo2, 70.0, 100.0))
 
 
 def analyze_spo2(
@@ -110,39 +76,54 @@ def analyze_spo2(
     red_col: str,
     ir_col: str,
     sample_rate: float,
-    calibration: SpO2Calibration,
-    timestamp_col: str | None = "timestamp",
     window_size: int = 256,
     step_size: int = 128,
 ) -> dict:
-    """Analyze SpO2 over time using a sliding-window R calculation."""
+    """Analyze SpO2 over time using sliding window.
+
+    Args:
+        df: DataFrame with PPG data
+        red_col: Column name for red channel
+        ir_col: Column name for IR channel
+        sample_rate: Sampling rate in Hz
+        window_size: Window size for each calculation
+        step_size: Step size for sliding window
+
+    Returns:
+        dict with arrays: timestamps, spo2_values, r_values
+    """
     if red_col not in df.columns or ir_col not in df.columns:
         return {"timestamps": [], "spo2_values": [], "r_values": []}
 
-    timestamps: list[float] = []
-    spo2_values: list[float] = []
-    r_values: list[float] = []
+    timestamps = []
+    spo2_values = []
+    r_values = []
 
     n = len(df)
     i = 0
     while i + window_size <= n:
         window_df = df.iloc[i : i + window_size]
+
         red_signal = window_df[red_col].values
         ir_signal = window_df[ir_col].values
 
-        r_value = calculate_r_value(red_signal, ir_signal, sample_rate)
-        spo2 = estimate_spo2(r_value, calibration=calibration)
+        r = calculate_r_value(red_signal, ir_signal, sample_rate)
+        spo2 = estimate_spo2(r)
 
         if len(df) > i + window_size // 2:
-            ts = (
-                df[timestamp_col].iloc[i + window_size // 2]
-                if timestamp_col and timestamp_col in df.columns
-                else i + window_size // 2
-            )
-            timestamps.append(float(ts))
+            if "timestamp" in df.columns:
+                ts = df["timestamp"].iloc[i + window_size // 2]
+            else:
+                ts = i + window_size // 2
+            timestamps.append(ts)
 
-        r_values.append(r_value)
+        r_values.append(r)
         spo2_values.append(spo2)
+
         i += step_size
 
-    return {"timestamps": timestamps, "spo2_values": spo2_values, "r_values": r_values}
+    return {
+        "timestamps": timestamps,
+        "spo2_values": spo2_values,
+        "r_values": r_values,
+    }
