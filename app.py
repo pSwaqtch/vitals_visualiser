@@ -628,27 +628,82 @@ else:
                 fig_poincare, use_container_width=True, key="poincare_chart"
             )
 
-        # ── Export filtered data (WebSocket mode) ─────────────────────
-        if st.session_state.get("_ws_live_mode"):
-            from utils.streaming import get_or_create_stream
+        # ── Exports ───────────────────────────────────────────────────
+        st.markdown('<div class="section-label">Export</div>', unsafe_allow_html=True)
 
-            _, _, _rec = get_or_create_stream(
-                st.session_state.get("ws_url", ""),
-                int(st.session_state.get("ws_buf_size", 60000)),
-            )
-            if st.button(
-                "Export filtered signal as CSV",
+        _base = filename.rsplit(".", 1)[0]
+
+        # Processed signal: time + raw + filtered
+        _sig_df = pd.DataFrame(
+            {
+                "time_s": np.arange(len(filtered)) / sample_rate,
+                "raw": signal,
+                "filtered": filtered,
+            }
+        )
+        _sig_csv = _sig_df.to_csv(index=False).encode()
+
+        # HRV metrics: scalar summary row
+        _metrics_df = pd.DataFrame(
+            [
+                {
+                    "hr_bpm": m["bpm"],
+                    "ibi_ms": m["ibi"],
+                    "rmssd_ms": m["rmssd"],
+                    "sdnn_ms": m["sdnn"],
+                    "pnn50": m["pnn50"],
+                    "pnn20": m["pnn20"],
+                    "sd1_ms": m.get("sd1", 0),
+                    "sd2_ms": m.get("sd2", 0),
+                    "sd1_sd2": m["sd1/sd2"],
+                    "breathing_hz": m["breathingrate"],
+                    "channel": hrv_col,
+                    "sample_rate_hz": sample_rate,
+                    "window_samples": len(df),
+                }
+            ]
+        )
+        _metrics_csv = _metrics_df.to_csv(index=False).encode()
+
+        # Beat matrix: peak times + RR intervals
+        _rr = np.array(wd.get("RR_list_cor", wd.get("RR_list", [])))
+        _peaks = np.array(wd["peaklist"])
+        _beat_df = pd.DataFrame(
+            {
+                "peak_time_s": _peaks / sample_rate,
+                "rr_ms": np.concatenate([[np.nan], _rr])[: len(_peaks)],
+            }
+        )
+        _beat_csv = _beat_df.to_csv(index=False).encode()
+
+        ec1, ec2, ec3 = st.columns(3)
+        with ec1:
+            st.download_button(
+                "Processed Signal",
+                _sig_csv,
+                file_name=f"{_base}_signal.csv",
+                mime="text/csv",
                 use_container_width=True,
-                key="export_filtered",
-            ):
-                filtered_df = pd.DataFrame(
-                    {
-                        "time_s": np.arange(len(filtered)) / sample_rate,
-                        "filtered": filtered,
-                    }
-                )
-                csv_path = _rec.export_filtered_csv(filtered_df)
-                st.success(f"Saved to {csv_path.name}")
+                key="dl_signal",
+            )
+        with ec2:
+            st.download_button(
+                "HRV Metrics",
+                _metrics_csv,
+                file_name=f"{_base}_metrics.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="dl_metrics",
+            )
+        with ec3:
+            st.download_button(
+                "Beat Matrix",
+                _beat_csv,
+                file_name=f"{_base}_beats.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="dl_beats",
+            )
 
     except Exception as e:
         st.error(f"HRV analysis failed: {e}")
